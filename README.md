@@ -1,0 +1,156 @@
+# novaposhta-mcp
+
+A read-only [MCP](https://modelcontextprotocol.io) server for the API of [Nova Poshta](https://novaposhta.ua), the Ukrainian delivery company. It lets an AI assistant such as Claude track parcels, find branches and parcel lockers, look up settlements and streets, and estimate what a delivery costs and when it arrives.
+
+Українською: [README.uk.md](README.uk.md)
+
+> **Unofficial.** This project is not affiliated with or endorsed by Nova Poshta. "Nova Poshta" is a trademark of its owner. Use it at your own risk.
+
+> **Status: 0.1.0.** Every tool was checked against the live API without an API key on 2026-10-08: `npm run live-check` starts the built server and calls each tool with every argument it has. The server is not yet verified with a personal API key, and tracking was checked only for a number Nova Poshta does not know, so the compact view of a real parcel is built from the field names of a live answer rather than tried on parcels of our own. See [Limitations](#limitations).
+
+## What it is for
+
+- **"Where is my parcel?"** A support bot or a voice agent answers by waybill number.
+- **"Which branch is closest, and is it open on Sunday?"** The assistant finds branches and lockers in a town with their addresses and hours.
+- **"How much is delivery to Lviv and when will it get there?"** An estimate straight from the carrier's calculator, for a shop assistant or an order form.
+
+The server does not create, change or cancel waybills. It has no write tools, and its API client refuses every method outside a short list of lookups and calculations.
+
+## Quick start
+
+You need Node.js 20 or newer. **No key is needed to start.** A personal API key from your Nova Poshta business cabinet is optional; see [Configuration](#configuration).
+
+> **Not on npm yet.** Until the first release is published, the `npx -y @myradostudio/novaposhta-mcp` commands below will not work. Run the server from source instead: `git clone https://github.com/myradostudio/novaposhta-mcp`, then `npm install` and `npm run build` in that folder, and use `"command": "node"` with `"args": ["/absolute/path/to/novaposhta-mcp/dist/index.js"]` in the configurations below.
+
+### Claude Desktop
+
+Add the server to `claude_desktop_config.json` (Settings → Developer → Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "novaposhta": {
+      "command": "npx",
+      "args": ["-y", "@myradostudio/novaposhta-mcp"]
+    }
+  }
+}
+```
+
+With a key, add `"env": { "NOVAPOSHTA_API_KEY": "your API key" }` to that block.
+
+If the server does not start on Windows, use `"command": "cmd"` and `"args": ["/c", "npx", "-y", "@myradostudio/novaposhta-mcp"]`.
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio novaposhta -- npx -y @myradostudio/novaposhta-mcp
+```
+
+### Cursor
+
+Add the same block to `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project):
+
+```json
+{
+  "mcpServers": {
+    "novaposhta": {
+      "command": "npx",
+      "args": ["-y", "@myradostudio/novaposhta-mcp"]
+    }
+  }
+}
+```
+
+Any other MCP client that can start a local stdio server works the same way: run `npx -y @myradostudio/novaposhta-mcp`.
+
+Then ask, for example:
+
+- "Track parcel 20450000000000."
+- "Which Nova Poshta branches are there in Brovary on Kyivska street, and when do they work?"
+- "Find parcel lockers in Irpin."
+- "How much does it cost to send a 2.5 kg parcel from Kyiv to Lviv, branch to branch, with 1500 UAH cash on delivery? When will it arrive if I send it on Monday?"
+
+## Configuration
+
+The server is configured with environment variables only, and both are optional.
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `NOVAPOSHTA_API_KEY` | no | | Personal API key from the Nova Poshta business cabinet. Sent with every request when set. |
+| `NOVAPOSHTA_API_URL` | no | `https://api.novaposhta.ua` | API origin. Must be `https://` (plain `http://` is accepted for localhost only). |
+
+**About working without a key.** The Nova Poshta API is designed around a personal key. On 2026-10-08 all seven methods this server calls answered without one, and that is how the server was checked. Nova Poshta does not promise this, so set a key for anything you rely on. Whether a key changes the answers (for example, whether a cost estimate then follows your own contract) has not been verified by this project.
+
+## Tools
+
+Places are identified by GUIDs that Nova Poshta calls `Ref`. A settlement returned by `search_settlements` carries two: `Ref` identifies the settlement and `DeliveryCity` identifies the city used for tariffs. The tools say which one they want. Names of settlements and streets are searched in Ukrainian letters; the API refuses Latin ones. Money is in hryvnias, weight in kilograms.
+
+| Tool | What it returns | API method |
+| --- | --- | --- |
+| `track_parcels` | Status, route, dates, weight and cost of up to 100 parcels by waybill number | `TrackingDocument.getStatusDocuments` |
+| `search_settlements` | Settlements by the beginning of the name, with region, the number of branches and both identifiers | `Address.searchSettlements` |
+| `search_warehouses` | Branches and parcel lockers of a city or settlement: address, hours, weight limit, coordinates | `AddressGeneral.getWarehouses` |
+| `list_warehouse_types` | Types of service points (post branch, cargo branch, parcel locker), to filter `search_warehouses` | `AddressGeneral.getWarehouseTypes` |
+| `search_streets` | Streets of a settlement by a word of the name | `Address.searchSettlementStreets` |
+| `estimate_delivery_cost` | Delivery cost between two cities for a weight, with optional declared value, volume and cash on delivery | `InternetDocument.getDocumentPrice` |
+| `estimate_delivery_date` | Estimated arrival date between two cities | `InternetDocument.getDocumentDeliveryDate` |
+
+Every method is called as `POST https://api.novaposhta.ua/v2.0/json/`.
+
+Notes on the tools:
+
+- **`track_parcels`.** Without a phone number the answer is what public tracking shows. With the phone of the sender or the recipient Nova Poshta adds names, phones and addresses; that is personal data and it goes to the AI model. A number Nova Poshta does not know comes back with `found: false`. Empty and zero fields are left out; `all_fields: true` returns every field that carries a value.
+- **`search_warehouses`** wants a place: `city_name` (the full name, not its beginning), `city_ref`, `settlement_ref`, or `warehouse_ref` for one branch. Without a place the API would return all branches of the country, so the tool refuses.
+- **`estimate_delivery_cost` and `estimate_delivery_date`** are calculations. They create nothing and reserve nothing. Nova Poshta sometimes adjusts the input (for example the cargo type) and says so in `warnings`, which the tool passes on.
+
+## Safety model
+
+- **Read-only, with no switch to change that.** There are no write tools. The API has a single address and no HTTP verb that tells a read from a write, so the guarantee is a catalogue: the client calls seven named methods and refuses any other. A test checks that every tool stays inside it.
+- **Nothing is sent that was not tried for real.** Nova Poshta publishes no machine-readable description of its API. In its place the tests hold the list of properties that the live check sent and the API accepted, and fail when a tool sends anything else.
+- **Honest annotations.** Every tool carries `readOnlyHint: true`.
+- **Strict input.** Every tool rejects arguments it does not know. Identifiers must look like a `Ref`, dates like dates.
+- **The key stays local.** When set, it is read from an environment variable, sent only to `NOVAPOSHTA_API_URL` and never written to stdout, stderr or tool results. Redirects are not followed.
+- **Less data to the model.** A tracking record has more than a hundred fields and a branch about sixty; tools return a compact selection. Russian duplicates of names are left out.
+- **No telemetry, no logging of business data.** stderr gets only startup messages and the type of a transport error.
+
+Two things the server cannot do for you. First, whatever a tool returns is sent to the AI model you use and to its provider; with a phone number, tracking returns personal data. Second, the description of a parcel is written by its sender and reaches the model as-is, so it could contain instructions written by someone else (prompt injection).
+
+## Limitations
+
+- **Not yet verified with a personal API key.** Everything was checked without one.
+- **Tracking of a real parcel was not part of the check.** The live check tracks a made-up number and gets "not found". The compact view of a found parcel uses the field names of a live answer, but which fields matter most in each status is a judgement, not something tested on our own shipments. Use `all_fields: true` if something seems missing.
+- **Status codes are not interpreted.** The tool returns `StatusCode` and the status text of Nova Poshta. The only code the server relies on is `3`, "not found", confirmed on the live API.
+- **Only 14-digit waybill numbers were accepted** in the live check; other formats, if Nova Poshta has them, are passed to the API as they are.
+- **The developer documentation could not be consulted.** `developers.novaposhta.ua` sits behind a bot check that an automated client must not get around. Parameter names and behaviour come from the answers of the live API. Rate limits are therefore unknown to this project, and the server does not pace its requests.
+- **No write operations:** creating, changing or deleting waybills, registers, counterparties and addresses, ordering a courier, returns and redirections are all out of scope.
+- **Not covered:** your own list of waybills, international delivery, packaging, time intervals, the map of branches.
+- **The date formats of tracking are those of the API** and differ from field to field (`01-10-2026 19:18:12`, `2026-10-02 08:02:03`, `04.10.2026 08:10:48`). The server passes them on unchanged.
+- **Fixed 30-second timeout** per request.
+
+## Development
+
+```bash
+npm install
+npm run lint          # tsc --noEmit over src/ and tests/
+npm test              # builds dist/ and the tests, then runs them with node:test
+npm run live-check    # runs every tool against the real API (needs the network)
+```
+
+- `src/methods.ts` is the catalogue of API methods the server may call.
+- `tests/support/contract.ts` lists, per method, the properties the live check sent. Every tool test calls the tool through a real MCP client and passes each recorded request through `assertMatchesContract`.
+- `scripts/live-check.mjs` is the other half: it starts `dist/index.js` over stdio and calls each tool against `api.novaposhta.ua`. It reads public directories, asks for calculations and tracks one made-up number. Run it after changing what a tool sends, then update the contract.
+- `tests/e2e.test.ts` starts the built server as a child process over stdio against a local HTTP mock.
+- To poke at the server by hand: `npx @modelcontextprotocol/inspector node dist/index.js`.
+
+The server uses the official TypeScript SDK ([`@modelcontextprotocol/server`](https://www.npmjs.com/package/@modelcontextprotocol/server)) and `zod`; there are no other runtime dependencies.
+
+Issues and pull requests are welcome. For security reports see [SECURITY.md](SECURITY.md).
+
+## Built by
+
+Built and maintained by [Myrado Studio](https://myradostudio.com) — custom MCP servers, AI agents and automation. Need an MCP server for your own system? https://myradostudio.com/en/mcp-server-development/
+
+## License
+
+[MIT](LICENSE) © 2026 Myrado Studio

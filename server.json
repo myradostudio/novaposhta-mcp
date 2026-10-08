@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.myradostudio/novaposhta",
+  "title": "Nova Poshta (unofficial)",
+  "description": "Unofficial read-only server for Nova Poshta: tracking, branches, lockers, delivery estimates.",
+  "repository": {
+    "url": "https://github.com/myradostudio/novaposhta-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://myradostudio.com/en/mcp-server-development/",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@myradostudio/novaposhta-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "NOVAPOSHTA_API_KEY",
+          "description": "Personal API key from the Nova Poshta business cabinet. Optional: the public methods the server uses answered without a key when it was written.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "NOVAPOSHTA_API_URL",
+          "description": "Origin of the Nova Poshta API. Change it only for testing against your own stand-in.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "https://api.novaposhta.ua"
+        }
+      ]
+    }
+  ]
+}
