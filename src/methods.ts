@@ -17,7 +17,8 @@ export interface ApiMethod {
 }
 
 function method(model: string, name: string): ApiMethod {
-  return { model, method: name };
+  // Frozen: an entry that passed the catalogue check cannot be turned into another method afterwards.
+  return Object.freeze({ model, method: name });
 }
 
 export const METHODS = {

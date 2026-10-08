@@ -12,8 +12,16 @@
 import assert from 'node:assert/strict';
 
 import { API_PATH, METHODS } from '../../src/methods.js';
-import { CARGO_TYPES, SERVICE_TYPES } from '../../src/tools/read.js';
 import type { RecordedRequest } from './fake-api.js';
+
+/**
+ * Written out here, not imported from the tools: these are the values scripts/live-check.mjs sent and the API
+ * accepted. tests/server.test.ts fails when a tool offers a value that is not in these lists.
+ */
+export const SERVICE_TYPES_SENT = ['WarehouseWarehouse', 'WarehouseDoors', 'DoorsWarehouse', 'DoorsDoors', 'WarehousePostomat', 'DoorsPostomat'];
+export const CARGO_TYPES_SENT = ['Parcel', 'Cargo', 'Documents'];
+/** The largest page each directory was asked for in the live check. */
+export const MAX_LIMIT_SENT = { settlements: 50, streets: 50, warehouses: 100 } as const;
 
 type Check = (value: unknown) => boolean;
 
@@ -22,6 +30,10 @@ const REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text: Check = (value) => typeof value === 'string' && value.length > 0;
 const ref: Check = (value) => typeof value === 'string' && REF.test(value);
 const positiveInteger: Check = (value) => typeof value === 'number' && Number.isInteger(value) && value > 0;
+const upTo =
+  (max: number): Check =>
+  (value) =>
+    positiveInteger(value) && (value as number) <= max;
 const positiveNumber: Check = (value) => typeof value === 'number' && value > 0;
 const oneOf =
   (values: readonly string[]): Check =>
@@ -44,8 +56,8 @@ export const LIVE_CHECKED: Readonly<Record<string, Readonly<Record<string, Check
           /^\d*$/.test(item['Phone']),
       ),
   },
-  'Address.searchSettlements': { CityName: text, Limit: positiveInteger, Page: positiveInteger },
-  'Address.searchSettlementStreets': { StreetName: text, SettlementRef: ref, Limit: positiveInteger },
+  'Address.searchSettlements': { CityName: text, Limit: upTo(MAX_LIMIT_SENT.settlements), Page: positiveInteger },
+  'Address.searchSettlementStreets': { StreetName: text, SettlementRef: ref, Limit: upTo(MAX_LIMIT_SENT.streets) },
   'AddressGeneral.getWarehouses': {
     CityName: text,
     CityRef: ref,
@@ -54,7 +66,7 @@ export const LIVE_CHECKED: Readonly<Record<string, Readonly<Record<string, Check
     WarehouseId: (value) => typeof value === 'string' && /^[1-9]\d*$/.test(value),
     FindByString: text,
     TypeOfWarehouseRef: ref,
-    Limit: positiveInteger,
+    Limit: upTo(MAX_LIMIT_SENT.warehouses),
     Page: positiveInteger,
   },
   'AddressGeneral.getWarehouseTypes': {},
@@ -62,8 +74,8 @@ export const LIVE_CHECKED: Readonly<Record<string, Readonly<Record<string, Check
     CitySender: ref,
     CityRecipient: ref,
     Weight: positiveNumber,
-    ServiceType: oneOf(SERVICE_TYPES),
-    CargoType: oneOf(CARGO_TYPES),
+    ServiceType: oneOf(SERVICE_TYPES_SENT),
+    CargoType: oneOf(CARGO_TYPES_SENT),
     Cost: positiveNumber,
     SeatsAmount: positiveInteger,
     VolumeGeneral: positiveNumber,
@@ -72,7 +84,7 @@ export const LIVE_CHECKED: Readonly<Record<string, Readonly<Record<string, Check
   'InternetDocument.getDocumentDeliveryDate': {
     CitySender: ref,
     CityRecipient: ref,
-    ServiceType: oneOf(SERVICE_TYPES),
+    ServiceType: oneOf(SERVICE_TYPES_SENT),
     DateTime: (value) => typeof value === 'string' && /^\d{2}\.\d{2}\.\d{4}$/.test(value),
   },
 };

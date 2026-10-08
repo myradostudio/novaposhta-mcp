@@ -89,18 +89,18 @@ const TRACKING_FIELDS = [
 ] as const;
 
 export function summarizeTracking(document: Json, full: boolean): Json {
-  const found = document['StatusCode'] !== STATUS_NOT_FOUND;
-  if (full) {
-    // Every field that carries a value, as the API named it.
-    return { found, ...pick(document, Object.keys(document)) };
-  }
-  return { found, ...pick(document, TRACKING_FIELDS) };
+  const code = document['StatusCode'];
+  // Without a status code nothing can be said about the parcel, so `found` is left out rather than guessed.
+  const found = typeof code === 'string' || typeof code === 'number' ? { found: String(code) !== STATUS_NOT_FOUND } : {};
+  // `full`: every field that carries a value, as the API named it.
+  return { ...found, ...pick(document, full ? Object.keys(document) : TRACKING_FIELDS) };
 }
 
 export function summarizeSettlement(settlement: Json): Json {
   return {
-    ...pick(settlement, ['Present', 'MainDescription', 'Area', 'Region', 'SettlementTypeCode', 'Ref', 'DeliveryCity', 'Warehouses']),
-    // Kept even when false: "no address delivery" is an answer, not an absent value.
+    ...pick(settlement, ['Present', 'MainDescription', 'Area', 'Region', 'SettlementTypeCode', 'Ref', 'DeliveryCity']),
+    // Kept even when 0 or false: "no branches there" and "no address delivery" are answers, not absent values.
+    ...(typeof settlement['Warehouses'] === 'number' ? { Warehouses: settlement['Warehouses'] } : {}),
     ...(typeof settlement['AddressDeliveryAllowed'] === 'boolean' ? { AddressDeliveryAllowed: settlement['AddressDeliveryAllowed'] } : {}),
     ...(typeof settlement['StreetsAvailability'] === 'boolean' ? { StreetsAvailability: settlement['StreetsAvailability'] } : {}),
   };

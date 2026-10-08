@@ -7,10 +7,10 @@ import { z } from 'zod';
 
 import { NovaPoshtaClient } from '../src/client.js';
 import { runTool } from '../src/server.js';
-import { tools } from '../src/tools/read.js';
+import { CARGO_TYPES, SERVICE_TYPES, tools } from '../src/tools/read.js';
 import { defineTool, READ_ONLY } from '../src/tools/types.js';
 import { SERVER_NAME, SERVER_VERSION } from '../src/version.js';
-import { assertMatchesContract, LIVE_CHECKED } from './support/contract.js';
+import { assertMatchesContract, CARGO_TYPES_SENT, LIVE_CHECKED, MAX_LIMIT_SENT, SERVICE_TYPES_SENT } from './support/contract.js';
 import { FakeApi, failure, ok } from './support/fake-api.js';
 import * as fixtures from './support/fixtures.js';
 import { NUMBERS, REFS } from './support/fixtures.js';
@@ -154,6 +154,41 @@ describe('read-only guarantee', () => {
     for (const request of api.requests) {
       assert.deepEqual(Object.keys(request.properties).sort(), Object.keys(LIVE_CHECKED[request.called] ?? {}).sort(), request.called);
     }
+  });
+});
+
+describe('what the tools offer vs. what the live check sent', () => {
+  it('offers only the service and cargo types that were sent to the live API', async () => {
+    harness = await createHarness();
+
+    const { tools: listed } = await harness.mcp.listTools();
+    const enumOf = (tool: string, argument: string) =>
+      ((listed.find((candidate) => candidate.name === tool)?.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>)[argument]?.enum;
+
+    // Adding a value to a tool without sending it in scripts/live-check.mjs fails here.
+    assert.deepEqual([...SERVICE_TYPES], SERVICE_TYPES_SENT);
+    assert.deepEqual([...CARGO_TYPES], CARGO_TYPES_SENT);
+    assert.deepEqual(enumOf('estimate_delivery_cost', 'service_type'), SERVICE_TYPES_SENT);
+    assert.deepEqual(enumOf('estimate_delivery_date', 'service_type'), SERVICE_TYPES_SENT);
+    assert.deepEqual(enumOf('estimate_delivery_cost', 'cargo_type'), CARGO_TYPES_SENT);
+  });
+
+  it('never asks a directory for a larger page than the live check did', async () => {
+    const api = new FakeApi();
+    api.on('Address.searchSettlements', ok([fixtures.settlements]));
+    api.on('Address.searchSettlementStreets', ok([fixtures.streets]));
+    api.on('AddressGeneral.getWarehouses', ok([fixtures.warehouse], { info: { totalCount: 1 } }));
+    harness = await createHarness({}, api);
+
+    await harness.callJson('search_settlements', { name: 'нов', limit: 100_000 });
+    await harness.callJson('search_streets', { settlement_ref: REFS.brovarySettlement, name: 'ки', limit: 100_000 });
+    await harness.callJson('search_warehouses', { city_name: 'Київ', limit: 100_000 });
+
+    assert.deepEqual(
+      api.requests.map((request) => request.properties['Limit']),
+      [MAX_LIMIT_SENT.settlements, MAX_LIMIT_SENT.streets, MAX_LIMIT_SENT.warehouses],
+    );
+    for (const request of api.requests) assertMatchesContract(request);
   });
 });
 

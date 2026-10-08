@@ -27,7 +27,10 @@ import { defineTool, READ_ONLY, type AnyTool } from './types.js';
 /** "Param Documents must not be more than 100 item" (answer of the live API). */
 export const MAX_TRACKED_DOCUMENTS = 100;
 
-/** `Ref` values returned by Common.getServiceTypes on 2026-10-08. */
+/**
+ * The list was read from Common.getServiceTypes on 2026-10-08 (a method the server itself does not call); the live
+ * check sends every value through the estimate tools.
+ */
 export const SERVICE_TYPES = [
   'WarehouseWarehouse',
   'WarehouseDoors',
@@ -37,8 +40,11 @@ export const SERVICE_TYPES = [
   'DoorsPostomat',
 ] as const;
 
-/** `Ref` values returned by Common.getCargoTypes on 2026-10-08. */
-export const CARGO_TYPES = ['Parcel', 'Cargo', 'Documents', 'TiresWheels', 'Pallet'] as const;
+/**
+ * The cargo types the calculator accepted in the live check with a weight alone. Common.getCargoTypes also lists
+ * TiresWheels and Pallet; the API refuses those without a list of tyres or pallet sizes, which this tool does not take.
+ */
+export const CARGO_TYPES = ['Parcel', 'Cargo', 'Documents'] as const;
 
 const serviceType = z
   .enum(SERVICE_TYPES)
@@ -48,22 +54,28 @@ const serviceType = z
   );
 
 /** People paste numbers as "2045 0000 0000 00"; the API wants them without separators. */
+const withoutSeparators = (value: string) => value.replace(/[\s()+-]/g, '');
+
 const documentNumber = z
   .string()
-  .min(6)
   .max(40)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9\s-]*$/, 'Must be a waybill number: letters and digits, optionally separated by spaces or dashes.');
+  .regex(/^[A-Za-z0-9][A-Za-z0-9\s-]*$/, 'Must be a waybill number: letters and digits, optionally separated by spaces or dashes.')
+  // Counted without the separators: "- - - - - -" is not a number.
+  .refine((value) => /^[A-Za-z0-9]{6,30}$/.test(withoutSeparators(value)), 'Must hold 6 to 30 letters and digits.');
 
-const phone = z.string().regex(/^\+?[\d\s()-]{10,20}$/, 'Must be a phone number, e.g. 380501234567.');
-
-const withoutSeparators = (value: string) => value.replace(/[\s()+-]/g, '');
+const phone = z
+  .string()
+  .max(30)
+  .regex(/^\+?[\d\s()-]+$/, 'Must be a phone number, e.g. 380501234567.')
+  // Counted without the separators, so that a string of dashes is not sent on as "no phone".
+  .refine((value) => /^\d{10,15}$/.test(withoutSeparators(value)), 'Must hold 10 to 15 digits, e.g. 380501234567.');
 
 export const tools: readonly AnyTool[] = [
   defineTool({
     name: 'track_parcels',
     title: 'Track parcels',
     description:
-      'Returns the current status of up to 100 Nova Poshta parcels by waybill number (ТТН, 14 digits): status text and code, route (cities and branches), dates of creation, planned and actual delivery, weight, delivery cost and who pays. A number Nova Poshta does not know comes back with found: false. Without a phone number the answer is the public one; with the phone of the sender or the recipient Nova Poshta adds names, phones and addresses, which is personal data. Empty and zero fields are left out; `all_fields: true` returns everything that carries a value.',
+      'Returns the current status of up to 100 Nova Poshta parcels by waybill number (ТТН, 14 digits): status text and code, route (cities and branches), dates of creation, planned and actual delivery, weight, delivery cost and who pays. A number Nova Poshta does not know comes back with found: false. Without a phone number the answer is the public one; with the phone of the sender or the recipient Nova Poshta adds names, phones and addresses, which is personal data. Fields that are empty, zero or false are left out; `all_fields: true` returns every other field instead of the compact selection.',
     inputSchema: z.strictObject({
       numbers: z
         .array(documentNumber)
@@ -73,7 +85,7 @@ export const tools: readonly AnyTool[] = [
       phone: phone
         .optional()
         .describe('Phone of the sender or the recipient, e.g. 380501234567. Applied to every number of the call; unlocks the full information for the parcels it belongs to.'),
-      all_fields: z.boolean().optional().describe('true returns every non-empty field of the API instead of the compact selection.'),
+      all_fields: z.boolean().optional().describe('true returns every field that is not empty, zero or false, instead of the compact selection.'),
     }),
     annotations: READ_ONLY,
     handler: async (args, { client }) => {
@@ -83,8 +95,9 @@ export const tools: readonly AnyTool[] = [
         Documents: numbers.map((number) => ({ DocumentNumber: number, Phone: phoneDigits })),
       });
       const parcels = objects(data).map((document) => summarizeTracking(document, args.all_fields === true));
-      // The reminder to pass a phone is repeated for every number; it is covered by the tool description.
-      const remarks = warnings.filter((line) => !line.includes('Please enter a valid phone number'));
+      // Without a phone the API repeats its reminder to pass one for every number; the tool description covers that.
+      // With a phone the same remark means the phone did not fit that parcel, so it is kept.
+      const remarks = args.phone === undefined ? warnings.filter((line) => !line.includes('Please enter a valid phone number')) : warnings;
       return {
         data: {
           returned: parcels.length,
@@ -99,7 +112,7 @@ export const tools: readonly AnyTool[] = [
     name: 'search_settlements',
     title: 'Search settlements',
     description:
-      'Finds cities, towns and villages of Ukraine by the beginning of the name, written in Ukrainian. Each result has the full name with district and region (Present), the number of Nova Poshta branches and lockers there (Warehouses) and two identifiers: `Ref` identifies the settlement (use it as settlement_ref in search_warehouses and search_streets), `DeliveryCity` identifies the city for tariffs (use it as city_ref in search_warehouses and in the estimate tools). Several settlements can share a name, so check the region.',
+      'Finds cities, towns and villages of Ukraine by name, written in Ukrainian. The beginning of a name is enough, and Nova Poshta also returns settlements whose former name or district matches, so read Present before choosing. Each result has the full name with district and region (Present), the number of Nova Poshta branches and lockers there (Warehouses) and two identifiers: `Ref` identifies the settlement (use it as settlement_ref in search_warehouses and search_streets), `DeliveryCity` identifies the city for tariffs (use it as city_ref in search_warehouses and in the estimate tools). Several settlements can share a name, so check the region.',
     inputSchema: z.strictObject({
       name: query('Name of the settlement or its beginning, in Ukrainian letters, e.g. "Бровари".'),
       limit: limit(10, 50),
@@ -125,7 +138,7 @@ export const tools: readonly AnyTool[] = [
     name: 'search_warehouses',
     title: 'Search branches and parcel lockers',
     description:
-      'Finds Nova Poshta branches (відділення) and parcel lockers (поштомати) in a city or settlement: number, description with the address, category, working hours (Schedule), weight limit per parcel in kg (PlaceMaxWeightAllowed), phone, coordinates and the identifiers Ref, CityRef and SettlementRef. Give the place as city_name, city_ref or settlement_ref, or ask for one branch by warehouse_ref. Narrow down by branch number, by text from the address, or by type (type_ref from list_warehouse_types, e.g. only parcel lockers). A big city has thousands of records: filter, or page through.',
+      'Finds Nova Poshta branches (відділення) and parcel lockers (поштомати) in a city or settlement: number, description with the address, category, working hours (Schedule), weight limit per parcel in kg (PlaceMaxWeightAllowed; left out when Nova Poshta reports 0), phone, coordinates and the identifiers Ref, CityRef and SettlementRef. Give the place as city_name, city_ref or settlement_ref, or ask for one branch by warehouse_ref. Narrow down by branch number, by text from the address, or by type (type_ref from list_warehouse_types, e.g. only parcel lockers). A big city has thousands of records: filter, or page through.',
     inputSchema: z.strictObject({
       city_name: query('Full name of the city in Ukrainian, e.g. "Київ". The beginning of a name finds nothing; use search_settlements for that.').optional(),
       city_ref: ref('City: `DeliveryCity` of a settlement from search_settlements, or `CityRef` of another branch.').optional(),
@@ -181,7 +194,11 @@ export const tools: readonly AnyTool[] = [
       'Finds streets of one settlement by the beginning of a word of the name, in Ukrainian: the name with its type (Present, e.g. "вул. Київська") and the identifier of the street. Needed for courier delivery to an address. Check StreetsAvailability of the settlement in search_settlements first: small settlements have no street directory.',
     inputSchema: z.strictObject({
       settlement_ref: ref('Settlement: `Ref` of a settlement from search_settlements.'),
-      name: query('A word of the street name or its beginning, in Ukrainian letters, without "вул.".'),
+      // One letter found nothing on the live API; two did.
+      name: query('A word of the street name or its beginning, at least two letters, in Ukrainian, without "вул.".').refine(
+        (value) => value.length >= 2,
+        'Give at least two letters.',
+      ),
       limit: limit(10, 50),
     }),
     annotations: READ_ONLY,
@@ -209,7 +226,7 @@ export const tools: readonly AnyTool[] = [
       city_recipient_ref: cityRef('recipient'),
       weight_kg: z.number().min(0.1).max(10_000).describe('Actual weight in kilograms, e.g. 2.5.'),
       service_type: serviceType,
-      cargo_type: z.enum(CARGO_TYPES).optional().describe('Kind of cargo. Default Parcel.'),
+      cargo_type: z.enum(CARGO_TYPES).optional().describe('Kind of cargo. Default Parcel. Tyres and pallets are not supported: the API wants their sizes.'),
       declared_value: z.number().min(1).optional().describe('Declared value of the contents in hryvnias. Nova Poshta uses its own minimum when omitted.'),
       seats: z.number().int().min(1).max(100).optional().describe('Number of pieces. Default 1.'),
       volume_m3: z.number().min(0.0001).max(100).optional().describe('Total volume in cubic metres, for bulky cargo.'),

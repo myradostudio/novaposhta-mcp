@@ -89,7 +89,7 @@ Places are identified by GUIDs that Nova Poshta calls `Ref`. A settlement return
 | Tool | What it returns | API method |
 | --- | --- | --- |
 | `track_parcels` | Status, route, dates, weight and cost of up to 100 parcels by waybill number | `TrackingDocument.getStatusDocuments` |
-| `search_settlements` | Settlements by the beginning of the name, with region, the number of branches and both identifiers | `Address.searchSettlements` |
+| `search_settlements` | Settlements by name or its beginning, with region, the number of branches and both identifiers | `Address.searchSettlements` |
 | `search_warehouses` | Branches and parcel lockers of a city or settlement: address, hours, weight limit, coordinates | `AddressGeneral.getWarehouses` |
 | `list_warehouse_types` | Types of service points (post branch, cargo branch, parcel locker), to filter `search_warehouses` | `AddressGeneral.getWarehouseTypes` |
 | `search_streets` | Streets of a settlement by a word of the name | `Address.searchSettlementStreets` |
@@ -100,18 +100,20 @@ Every method is called as `POST https://api.novaposhta.ua/v2.0/json/`.
 
 Notes on the tools:
 
-- **`track_parcels`.** Without a phone number the answer is what public tracking shows. With the phone of the sender or the recipient Nova Poshta adds names, phones and addresses; that is personal data and it goes to the AI model. A number Nova Poshta does not know comes back with `found: false`. Empty and zero fields are left out; `all_fields: true` returns every field that carries a value.
+- **`track_parcels`.** Without a phone number the answer is what public tracking shows. With the phone of the sender or the recipient Nova Poshta adds names, phones and addresses; that is personal data and it goes to the AI model. A number Nova Poshta does not know comes back with `found: false`. Fields that are empty, zero or false are left out; `all_fields: true` returns every other field instead of the compact selection.
+- **`search_settlements`** also returns settlements whose former name or district matches the text (a search for «нов» finds Zviahel, formerly Novohrad-Volynskyi), so the model is told to read the full name before choosing.
 - **`search_warehouses`** wants a place: `city_name` (the full name, not its beginning), `city_ref`, `settlement_ref`, or `warehouse_ref` for one branch. Without a place the API would return all branches of the country, so the tool refuses.
-- **`estimate_delivery_cost` and `estimate_delivery_date`** are calculations. They create nothing and reserve nothing. Nova Poshta sometimes adjusts the input (for example the cargo type) and says so in `warnings`, which the tool passes on.
+- **`search_streets`** needs at least two letters: one letter found nothing on the live API.
+- **`estimate_delivery_cost` and `estimate_delivery_date`** are calculations. They create nothing and reserve nothing. Nova Poshta sometimes adjusts the input (for example the cargo type) and says so in `warnings`, which the tool passes on. Cargo types are parcel, cargo and documents; tyres and pallets are not offered, because the API refuses them without their sizes.
 
 ## Safety model
 
 - **Read-only, with no switch to change that.** There are no write tools. The API has a single address and no HTTP verb that tells a read from a write, so the guarantee is a catalogue: the client calls seven named methods and refuses any other. A test checks that every tool stays inside it.
-- **Nothing is sent that was not tried for real.** Nova Poshta publishes no machine-readable description of its API. In its place the tests hold the list of properties that the live check sent and the API accepted, and fail when a tool sends anything else.
+- **Nothing is sent that was not tried for real.** Nova Poshta publishes no machine-readable description of its API. In its place the tests hold the list of properties, service types, cargo types and page sizes that the live check sent and the API accepted, and fail when a tool sends or offers anything else. Free text (names, numbers, phones) and amounts are of course your own.
 - **Honest annotations.** Every tool carries `readOnlyHint: true`.
 - **Strict input.** Every tool rejects arguments it does not know. Identifiers must look like a `Ref`, dates like dates.
-- **The key stays local.** When set, it is read from an environment variable, sent only to `NOVAPOSHTA_API_URL` and never written to stdout, stderr or tool results. Redirects are not followed.
-- **Less data to the model.** A tracking record has more than a hundred fields and a branch about sixty; tools return a compact selection. Russian duplicates of names are left out.
+- **The key stays local.** When set, it is read from an environment variable, sent only to `NOVAPOSHTA_API_URL` and never written to stdout or stderr. Every answer of the API is cleaned of the key before anything is built from it, so it cannot reach a tool result either. Redirects are not followed.
+- **Less data to the model.** A tracking record has more than a hundred fields and a branch about sixty; tools return a compact selection. Russian duplicates of names are left out. In the compact views a value of zero is treated as absent, with one exception: the number of branches in a settlement, where zero is the answer.
 - **No telemetry, no logging of business data.** stderr gets only startup messages and the type of a transport error.
 
 Two things the server cannot do for you. First, whatever a tool returns is sent to the AI model you use and to its provider; with a phone number, tracking returns personal data. Second, the description of a parcel is written by its sender and reaches the model as-is, so it could contain instructions written by someone else (prompt injection).
@@ -124,7 +126,7 @@ Two things the server cannot do for you. First, whatever a tool returns is sent 
 - **Only 14-digit waybill numbers were accepted** in the live check; other formats, if Nova Poshta has them, are passed to the API as they are.
 - **The developer documentation could not be consulted.** `developers.novaposhta.ua` sits behind a bot check that an automated client must not get around. Parameter names and behaviour come from the answers of the live API. Rate limits are therefore unknown to this project, and the server does not pace its requests.
 - **No write operations:** creating, changing or deleting waybills, registers, counterparties and addresses, ordering a courier, returns and redirections are all out of scope.
-- **Not covered:** your own list of waybills, international delivery, packaging, time intervals, the map of branches.
+- **Not covered:** your own list of waybills, international delivery, packaging, time intervals, the map of branches, cost estimates for tyres and pallets.
 - **The date formats of tracking are those of the API** and differ from field to field (`01-10-2026 19:18:12`, `2026-10-02 08:02:03`, `04.10.2026 08:10:48`). The server passes them on unchanged.
 - **Fixed 30-second timeout** per request.
 

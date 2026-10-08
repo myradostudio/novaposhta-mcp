@@ -108,6 +108,14 @@ describe('the read-only catalogue', () => {
     assert.equal(isCatalogued(lookAlike), false);
     assert.equal(api.requests.length, 0);
   });
+
+  it('cannot be rewritten after the check: its entries are frozen', () => {
+    for (const method of Object.values(METHODS)) assert.ok(Object.isFrozen(method), `${method.model}.${method.method}`);
+    assert.throws(() => {
+      (METHODS.deliveryPrice as { method: string }).method = 'save';
+    }, TypeError);
+    assert.equal(METHODS.deliveryPrice.method, 'getDocumentPrice');
+  });
 });
 
 describe('failures', () => {
@@ -171,6 +179,33 @@ describe('failures', () => {
     assert.equal(error.status, 502);
     assert.equal(error.message.length, 500);
     assert.match(describeError(error), /^Nova Poshta API error \(HTTP 502\): <html>/);
+  });
+
+  it('keeps the status and the hint when an HTTP error carries JSON of another shape', async () => {
+    const { api, client } = setup();
+    api.on('*', json({ message: 'Too Many Requests' }, 429));
+
+    const error = await client.call(METHODS.warehouseTypes).catch((e: unknown) => e);
+
+    assert.ok(error instanceof NovaPoshtaApiError);
+    assert.equal(error.status, 429);
+    assert.equal(describeError(error), 'Nova Poshta API error (HTTP 429): {"message":"Too Many Requests"}\nToo many requests. Wait before retrying.');
+  });
+
+  it('removes the key from an answer before anything is cut or parsed', async () => {
+    const { api, client } = setup({ apiKey: API_KEY });
+    // The key starts inside the first 500 characters and ends after them.
+    api.on('AddressGeneral.getWarehouseTypes', new Response(`${'x'.repeat(490)}${API_KEY} tail`, { status: 500 }));
+    api.on('AddressGeneral.getWarehouses', ok([{ Description: `echo ${API_KEY}` }], { warnings: [`key ${API_KEY}`] }));
+
+    const error = await client.call(METHODS.warehouseTypes).catch((e: unknown) => e);
+    const result = await client.call(METHODS.warehouses, { CityName: 'Київ' });
+
+    assert.ok(error instanceof NovaPoshtaApiError);
+    assert.ok(!error.message.includes(API_KEY.slice(0, 8)), 'not even the beginning of the key survives the cut');
+    assert.match(error.message, /\[redacted\]$/);
+    assert.deepEqual(result.data, [{ Description: 'echo [redacted]' }]);
+    assert.deepEqual(result.warnings, ['key [redacted]']);
   });
 
   it('suggests waiting on HTTP 429', async () => {

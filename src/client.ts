@@ -41,7 +41,9 @@ export interface ApiResult {
 }
 
 const MAX_ERROR_BODY_CHARS = 500;
-const MAX_MESSAGES = 20;
+const MAX_ERRORS = 20;
+/** Tracking adds up to two remarks per number and takes a hundred numbers; none of them may be cut off. */
+const MAX_WARNINGS = 300;
 const REDACTED = '[redacted]';
 
 export class NovaPoshtaClient {
@@ -87,7 +89,8 @@ export class NovaPoshtaClient {
     let text: string;
     try {
       response = await this.fetchImpl(this.config.apiUrl + API_PATH, init);
-      text = await response.text();
+      // Scrubbed once, here: whatever is built from the answer below (data, remarks, errors) cannot carry the key.
+      text = this.scrub(await response.text());
     } catch (error) {
       throw this.toTransportError(name, error);
     }
@@ -102,22 +105,31 @@ export class NovaPoshtaClient {
     try {
       body = JSON.parse(text);
     } catch {
-      if (!response.ok) {
-        const excerpt = this.scrub(text.trim()).slice(0, MAX_ERROR_BODY_CHARS) || response.statusText || 'Empty error response.';
-        throw new NovaPoshtaApiError(response.status, [excerpt]);
-      }
-      throw new UnexpectedResponseError(`${name} was answered with HTTP ${response.status} and a body that is not valid JSON.`);
+      body = undefined;
     }
 
     if (!isObject(body) || typeof body['success'] !== 'boolean') {
-      throw new UnexpectedResponseError(`${name} was answered with HTTP ${response.status} and a body that is not a Nova Poshta response.`);
+      // Not the envelope of the API: an error page of a proxy, a gateway answer in its own JSON, or junk.
+      if (!response.ok) {
+        const excerpt = text.trim().slice(0, MAX_ERROR_BODY_CHARS) || response.statusText || 'Empty error response.';
+        throw new NovaPoshtaApiError(response.status, [excerpt]);
+      }
+      throw new UnexpectedResponseError(
+        body === undefined
+          ? `${name} was answered with HTTP ${response.status} and a body that is not valid JSON.`
+          : `${name} was answered with HTTP ${response.status} and a body that is not a Nova Poshta response.`,
+      );
     }
 
-    const warnings = messages(body['warnings']).map((line) => this.scrub(line));
+    const warnings = messages(body['warnings'], MAX_WARNINGS);
     if (body['success'] === false || !response.ok) {
-      const errors = messages(body['errors']).map((line) => this.scrub(line));
+      const errors = messages(body['errors'], MAX_ERRORS);
       // An unknown model or method is reported in `warnings` with empty `errors`.
-      throw new NovaPoshtaApiError(response.status, errors.length > 0 ? errors : warnings, strings(body['errorCodes']));
+      throw new NovaPoshtaApiError(
+        response.status,
+        errors.length > 0 ? errors : warnings.slice(0, MAX_ERRORS),
+        strings(body['errorCodes']),
+      );
     }
 
     const info = body['info'];
@@ -147,14 +159,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, MAX_MESSAGES) : [];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, MAX_ERRORS) : [];
 }
 
 /**
  * `errors` and `warnings` are lists of strings, except that tracking puts
  * objects such as `{ "ID_20450000000000": "…" }` into `warnings`.
  */
-function messages(value: unknown): string[] {
+function messages(value: unknown, max: number): string[] {
   if (!Array.isArray(value)) return [];
   const lines: string[] = [];
   for (const item of value) {
@@ -165,7 +177,7 @@ function messages(value: unknown): string[] {
       }
     }
   }
-  return lines.slice(0, MAX_MESSAGES).map((line) => line.slice(0, MAX_ERROR_BODY_CHARS));
+  return lines.slice(0, max).map((line) => line.slice(0, MAX_ERROR_BODY_CHARS));
 }
 
 function isTimeout(error: unknown): boolean {

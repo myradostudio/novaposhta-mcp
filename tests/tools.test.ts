@@ -115,6 +115,41 @@ describe('track_parcels', () => {
     assert.deepEqual(result.warnings, ['Invalid DocumentNumber: 12345678']);
   });
 
+  it('does not lose a remark behind a hundred reminders', async () => {
+    harness = await createHarness();
+    const numbers = Array.from({ length: 100 }, (_, index) => String(20450000000000 + index));
+    harness.api.on(
+      'TrackingDocument.getStatusDocuments',
+      // The remark that matters comes last, after one reminder per number.
+      ok([fixtures.unknownParcel], { warnings: [...numbers.map(fixtures.phoneReminder), 'Invalid DocumentNumber: 12345678'] }),
+    );
+
+    const result = await harness.callJson('track_parcels', { numbers: [...numbers.slice(0, 99), '12345678'] });
+
+    assert.deepEqual(result.warnings, ['Invalid DocumentNumber: 12345678']);
+  });
+
+  it('keeps the reminder when a phone was given: it then means the phone did not fit', async () => {
+    harness = await createHarness();
+    harness.api.on('TrackingDocument.getStatusDocuments', ok([fixtures.deliveredParcel], { warnings: [fixtures.phoneReminder(NUMBERS.delivered)] }));
+
+    const result = await harness.callJson('track_parcels', { numbers: [NUMBERS.delivered], phone: '380501234567' });
+
+    assert.deepEqual(result.warnings, [`${NUMBERS.delivered}: Please enter a valid phone number from the express invoice to show full information`]);
+  });
+
+  it('does not guess whether a parcel was found when the answer has no status code', async () => {
+    harness = await createHarness();
+    harness.api.on('TrackingDocument.getStatusDocuments', ok([{ Number: NUMBERS.delivered, Status: 'У дорозі' }, { Number: NUMBERS.unknown, StatusCode: 3 }]));
+
+    const { parcels } = await harness.callJson('track_parcels', { numbers: [NUMBERS.delivered, NUMBERS.unknown] });
+
+    assert.deepEqual(parcels, [
+      { Number: NUMBERS.delivered, Status: 'У дорозі' },
+      { found: false, Number: NUMBERS.unknown, StatusCode: 3 },
+    ]);
+  });
+
   it('returns every field that carries a value with all_fields', async () => {
     harness = await createHarness();
     harness.api.on('TrackingDocument.getStatusDocuments', ok([fixtures.deliveredParcel]));
@@ -126,6 +161,7 @@ describe('track_parcels', () => {
     assert.equal(parcels[0].Edit, true);
     assert.equal('PhoneSender' in parcels[0], false, 'empty fields stay out');
     assert.equal('Redelivery' in parcels[0], false, 'zero fields stay out');
+    assert.equal('CargoReturnRefusal' in parcels[0], false, 'false fields stay out');
   });
 
   it('sends the configured key with the request', async () => {
@@ -157,6 +193,24 @@ describe('track_parcels', () => {
       assert.equal(result.isError, true, JSON.stringify(args).slice(0, 60));
     }
     assert.equal(harness.api.requests.length, 0);
+  });
+
+  it('counts digits, not separators: a row of dashes is neither a number nor a phone', async () => {
+    harness = await createHarness();
+    const invalid: Record<string, unknown>[] = [
+      { numbers: ['2 - - - - - - -'] },
+      { numbers: ['12345'] },
+      { numbers: [NUMBERS.unknown], phone: '----------' },
+      { numbers: [NUMBERS.unknown], phone: '((((((((((' },
+      { numbers: [NUMBERS.unknown], phone: '380 50 123' },
+      { numbers: [NUMBERS.unknown], phone: '+3805012345678901' },
+    ];
+
+    for (const args of invalid) {
+      const result = await harness.call('track_parcels', args);
+      assert.equal(result.isError, true, JSON.stringify(args));
+    }
+    assert.equal(harness.api.requests.length, 0, 'a phone that is not one must not turn into a search without a phone');
   });
 });
 
@@ -193,8 +247,9 @@ describe('search_settlements', () => {
           SettlementTypeCode: 'с.',
           Ref: '0eb7e688-4b3a-11e4-ab6d-005056801329',
           DeliveryCity: '06f878fe-4079-11de-b509-001d92f78698',
+          // A village with no branches and no street directory: 0 and false are answers and are kept.
+          Warehouses: 0,
           AddressDeliveryAllowed: true,
-          // A village without a street directory: false is an answer and is kept.
           StreetsAvailability: false,
         },
       ],
@@ -382,10 +437,14 @@ describe('search_streets', () => {
     });
   });
 
-  it('needs the settlement', async () => {
+  it('needs the settlement and at least two letters', async () => {
     harness = await createHarness();
 
     assert.equal((await harness.call('search_streets', { name: 'Київська' })).isError, true);
+    // One letter found nothing on the live API, so it is refused instead of answered with an empty list.
+    const oneLetter = await harness.call('search_streets', { settlement_ref: REFS.brovarySettlement, name: 'к' });
+    assert.equal(oneLetter.isError, true);
+    assert.match(oneLetter.text, /at least two letters/);
     assert.equal(harness.api.requests.length, 0);
   });
 });
@@ -457,6 +516,9 @@ describe('estimate_delivery_cost', () => {
       { ...route, weight_kg: 0 },
       { ...route, weight_kg: 1, service_type: 'Express' },
       { ...route, weight_kg: 1, cargo_type: 'Money' },
+      // Listed by Nova Poshta, but refused by its calculator without sizes that this tool does not take.
+      { ...route, weight_kg: 1, cargo_type: 'Pallet' },
+      { ...route, weight_kg: 1, cargo_type: 'TiresWheels' },
       { ...route, weight_kg: 1, seats: 1.5 },
       { ...route, weight_kg: 1, currency: 'USD' },
       { city_sender_ref: 'Київ', city_recipient_ref: REFS.brovaryCity, weight_kg: 1 },

@@ -81,7 +81,10 @@ await check('list_warehouse_types', async () => {
 
 await check('search_warehouses: city_name, number', async () => {
   const { json } = await call('search_warehouses', { city_name: 'Бровари', number: 2, limit: 5, page: 1 });
-  warehouse = json.warehouses.find((item) => String(item.Number) === '2');
+  expect(json.warehouses.length > 0, 'nothing was found');
+  expect(json.warehouses.every((item) => String(item.Number) === '2'), 'number was not applied: other numbers came back');
+  expect(json.warehouses.every((item) => item.CityDescription === 'Бровари'), 'city_name was not applied');
+  warehouse = json.warehouses.find((item) => item.CategoryOfWarehouse === 'Branch');
   expect(warehouse, 'branch №2 was not found');
   expect(warehouse.Schedule && warehouse.CityRef && warehouse.SettlementRef, 'the branch lacks Schedule, CityRef or SettlementRef');
   return warehouse.Description;
@@ -92,6 +95,7 @@ await check('search_warehouses: city_ref, search, type_ref', async () => {
   expect(json.warehouses.length > 0, 'no parcel lockers found');
   expect(json.warehouses.every((item) => item.TypeOfWarehouse === lockerType.Ref), 'type_ref was not applied');
   expect(json.warehouses.every((item) => item.CityRef === settlement.DeliveryCity), 'city_ref was not applied');
+  expect(json.warehouses.every((item) => `${item.Description} ${item.ShortAddress}`.includes('Київськ')), 'search was not applied');
   return `${json.pagination.total} lockers match, e.g. ${json.warehouses[0].ShortAddress}`;
 });
 
@@ -104,6 +108,21 @@ await check('search_warehouses: settlement_ref, paging', async () => {
   return `${first.pagination.total} service points in the settlement`;
 });
 
+await check('search_warehouses: the largest page the tool asks for (100)', async () => {
+  const { json } = await call('search_warehouses', { settlement_ref: settlement.Ref, limit: 100 });
+  expect(json.pagination.limit === 100 && json.warehouses.length === 100, `asked for 100, got ${json.warehouses.length}`);
+  return `${json.warehouses.length} of ${json.pagination.total}`;
+});
+
+await check('search_settlements: the largest page the tool asks for (50)', async () => {
+  const { json } = await call('search_settlements', { name: 'нов', limit: 50 });
+  expect(json.pagination.limit === 50 && json.settlements.length === 50, `asked for 50, got ${json.settlements.length}`);
+  // The API matches former names and districts too ("Звягель, Новоград-Волинський р-н"), so the text is looked for in Present.
+  const byName = json.settlements.filter((item) => item.MainDescription.toLowerCase().startsWith('нов')).length;
+  expect(byName >= 40, `only ${byName} of 50 names begin with the text`);
+  return `${json.settlements.length} of ${json.pagination.total}; ${byName} names begin with the text, the rest match by a former name or district`;
+});
+
 await check('search_warehouses: warehouse_ref', async () => {
   const { json } = await call('search_warehouses', { warehouse_ref: warehouse.Ref });
   expect(json.warehouses.length === 1 && json.warehouses[0].Ref === warehouse.Ref, 'expected exactly that branch');
@@ -113,7 +132,17 @@ await check('search_warehouses: warehouse_ref', async () => {
 await check('search_streets: settlement_ref, name, limit', async () => {
   const { json } = await call('search_streets', { settlement_ref: settlement.Ref, name: 'Київ', limit: 2 });
   expect(json.streets.length > 0 && json.streets[0].SettlementStreetRef, 'no streets found');
+  expect(json.streets.every((street) => street.SettlementRef === settlement.Ref), 'settlement_ref was not applied');
+  expect(json.streets.every((street) => street.Present.includes('Київ')), 'name was not applied');
   return json.streets.map((street) => street.Present).join(', ');
+});
+
+await check('search_streets: limit is applied, up to the largest the tool asks for (50)', async () => {
+  const one = (await call('search_streets', { settlement_ref: settlement.Ref, name: 'ки', limit: 1 })).json;
+  const many = (await call('search_streets', { settlement_ref: settlement.Ref, name: 'ки', limit: 50 })).json;
+  expect(one.streets.length === 1 && one.total > 1, `limit 1 returned ${one.streets.length} of ${one.total}`);
+  expect(many.streets.length === many.total && many.streets.length > 1, `limit 50 returned ${many.streets.length} of ${many.total}`);
+  return `limit 1 gives 1 of ${one.total}, limit 50 gives all ${many.streets.length}`;
 });
 
 let kyiv;
@@ -146,6 +175,59 @@ await check('estimate_delivery_cost: the minimum of arguments', async () => {
   const { json } = await call('estimate_delivery_cost', { city_sender_ref: kyiv.DeliveryCity, city_recipient_ref: settlement.DeliveryCity, weight_kg: 1 });
   expect(typeof json.Cost === 'number' && json.Cost > 0, 'no Cost');
   return `Cost ${json.Cost} ${json.currency}, AssessedCost ${json.AssessedCost}`;
+});
+
+const SERVICE_TYPES = ['WarehouseWarehouse', 'WarehouseDoors', 'DoorsWarehouse', 'DoorsDoors', 'WarehousePostomat', 'DoorsPostomat'];
+const CARGO_TYPES = ['Parcel', 'Cargo', 'Documents'];
+
+await check('estimate_delivery_cost: every service type is accepted', async () => {
+  const costs = [];
+  for (const service_type of SERVICE_TYPES) {
+    const result = await call('estimate_delivery_cost', { city_sender_ref: kyiv.DeliveryCity, city_recipient_ref: settlement.DeliveryCity, weight_kg: 1, service_type });
+    expect(!result.isError, `${service_type}: ${result.text}`);
+    expect(typeof result.json.Cost === 'number' && result.json.Cost > 0, `${service_type}: no Cost`);
+    costs.push(`${service_type} ${result.json.Cost}`);
+  }
+  expect(new Set(costs.map((line) => line.split(' ')[1])).size > 1, 'service_type has no effect on the cost');
+  return costs.join(', ');
+});
+
+await check('estimate_delivery_cost: every cargo type is accepted', async () => {
+  const costs = [];
+  for (const cargo_type of CARGO_TYPES) {
+    const result = await call('estimate_delivery_cost', { city_sender_ref: kyiv.DeliveryCity, city_recipient_ref: settlement.DeliveryCity, weight_kg: 1, cargo_type });
+    expect(!result.isError, `${cargo_type}: ${result.text}`);
+    expect(typeof result.json.Cost === 'number' && result.json.Cost > 0, `${cargo_type}: no Cost`);
+    costs.push(`${cargo_type} ${result.json.Cost}${result.json.warnings ? ` (${result.json.warnings.join('; ')})` : ''}`);
+  }
+  return costs.join(', ');
+});
+
+await check('estimate_delivery_cost: tyres and pallets are not offered, because the API wants their sizes', async () => {
+  const { tools } = await client.listTools();
+  const offered = tools.find((tool) => tool.name === 'estimate_delivery_cost').inputSchema.properties.cargo_type.enum;
+  expect(JSON.stringify(offered) === JSON.stringify(CARGO_TYPES), `the tool offers ${JSON.stringify(offered)}`);
+  return `the tool offers ${offered.join(', ')}`;
+});
+
+await check('estimate_delivery_cost: weight and seats change the result', async () => {
+  const price = async (extra) => (await call('estimate_delivery_cost', { city_sender_ref: kyiv.DeliveryCity, city_recipient_ref: settlement.DeliveryCity, ...extra })).json.Cost;
+  const light = await price({ weight_kg: 1 });
+  const heavy = await price({ weight_kg: 25 });
+  const twoSeats = await price({ weight_kg: 25, seats: 2 });
+  expect(heavy > light, `25 kg costs ${heavy}, 1 kg costs ${light}`);
+  return `1 kg ${light}, 25 kg ${heavy}, 25 kg in 2 seats ${twoSeats}`;
+});
+
+await check('estimate_delivery_date: every service type is accepted', async () => {
+  const dates = [];
+  for (const service_type of SERVICE_TYPES) {
+    const result = await call('estimate_delivery_date', { city_sender_ref: kyiv.DeliveryCity, city_recipient_ref: settlement.DeliveryCity, service_type });
+    expect(!result.isError, `${service_type}: ${result.text}`);
+    expect(/^\d{4}-\d{2}-\d{2} /.test(result.json.delivery_date), `${service_type}: ${result.json.delivery_date}`);
+    dates.push(`${service_type} ${result.json.delivery_date.slice(5, 16)}`);
+  }
+  return dates.join(', ');
 });
 
 await check('estimate_delivery_date: send_date, service_type', async () => {
