@@ -140,7 +140,7 @@ npm run live-check    # runs every tool against the real API (needs the network)
 ```
 
 - `src/methods.ts` is the catalogue of API methods the server may call.
-- `tests/support/contract.ts` lists, per method, the properties the live check sent. Every tool test calls the tool through a real MCP client and passes each recorded request through `assertMatchesContract`.
+- `tests/support/contract.ts` lists, per method, the properties the live check sent. Every tool test calls the tool through a real MCP client, and when a test ends each request it recorded goes through `assertMatchesContract`.
 - `scripts/live-check.mjs` is the other half: it starts `dist/index.js` over stdio and calls each tool against `api.novaposhta.ua`. It reads public directories, asks for calculations and tracks one made-up number. Run it after changing what a tool sends, then update the contract.
 - `tests/e2e.test.ts` starts the built server as a child process over stdio against a local HTTP mock.
 - To poke at the server by hand: `npx @modelcontextprotocol/inspector node dist/index.js`.

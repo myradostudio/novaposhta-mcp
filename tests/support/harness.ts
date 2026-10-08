@@ -5,6 +5,7 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { NovaPoshtaClient } from '../../src/client.js';
 import type { Config } from '../../src/config.js';
 import { createServer } from '../../src/server.js';
+import { assertMatchesContract } from './contract.js';
 import { FakeApi } from './fake-api.js';
 
 export const API_KEY = 'test0api0key0123456789abcdef0000';
@@ -68,6 +69,8 @@ export async function createHarness(overrides: Partial<Config> = {}, api = new F
     close: async () => {
       await mcp.close();
       await server.close();
+      // Every request of every test is held against the contract, whether or not the test looked at it.
+      for (const request of api.requests) assertMatchesContract(request, config.apiKey ?? '');
     },
   };
 }
