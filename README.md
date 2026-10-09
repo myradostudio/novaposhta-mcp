@@ -120,8 +120,8 @@ Two things the server cannot do for you. First, whatever a tool returns is sent 
 
 ## Limitations
 
-- **Not yet verified with a personal API key.** Everything was checked without one.
-- **Tracking of a real parcel was not part of the check.** The live check tracks a made-up number and gets "not found". The compact view of a found parcel uses the field names of a live answer, but which fields matter most in each status is a judgement, not something tested on our own shipments. Use `all_fields: true` if something seems missing.
+- **Not yet verified with a personal API key.** Everything was checked without one. The live check can ask for a key (`npm run live-check:key`, see [Live check](#live-check)); it has not been run that way yet.
+- **Tracking of a real parcel was not part of the check.** The live check tracks a made-up number and gets "not found". The compact view of a found parcel uses the field names of a live answer, but which fields matter most in each status is a judgement, not something tested on our own shipments. Use `all_fields: true` if something seems missing. The live check can track a waybill of your own as well; that has not been run yet either.
 - **Status codes are not interpreted.** The tool returns `StatusCode` and the status text of Nova Poshta. The only code the server relies on is `3`, "not found", confirmed on the live API.
 - **Only 14-digit waybill numbers were accepted** in the live check; other formats, if Nova Poshta has them, are passed to the API as they are.
 - **The developer documentation could not be consulted.** `developers.novaposhta.ua` sits behind a bot check that an automated client must not get around. Parameter names and behaviour come from the answers of the live API. Rate limits are therefore unknown to this project, and the server does not pace its requests.
@@ -129,6 +129,25 @@ Two things the server cannot do for you. First, whatever a tool returns is sent 
 - **Not covered:** your own list of waybills, international delivery, packaging, time intervals, the map of branches, cost estimates for tyres and pallets.
 - **The date formats of tracking are those of the API** and differ from field to field (`01-10-2026 19:18:12`, `2026-10-02 08:02:03`, `04.10.2026 08:10:48`). The server passes them on unchanged.
 - **Fixed 30-second timeout** per request.
+
+## Live check
+
+`npm run live-check` starts the built server the way an MCP host does and calls every tool against `api.novaposhta.ua` with every argument it has. Each check prints one line, `PASS`, `FAIL` or `SKIP`, and the exit code is 1 when anything failed. The check reads public directories, asks for calculations and tracks a made-up number, so it changes nothing at Nova Poshta.
+
+```bash
+npm run live-check        # without a key
+npm run live-check:key    # asks for your key and for a waybill of your own
+```
+
+`live-check:key` asks three questions and shows nothing of what you type:
+
+1. your API key (Enter runs the check without a key);
+2. the number of a waybill of your own (Enter leaves the real parcel out);
+3. the phone of its sender or recipient (Enter tracks without a phone).
+
+The key reaches the server through its environment, so it is neither in the command nor in the shell history, and the output is cleaned of it. Of your parcel the output names the fields that came back and says whether the check passed; it never shows the number, the phone, a name, an address or the status.
+
+Without npm: `node scripts/live-check.mjs [--ask-key] [--ask-waybill]` after `npm run build`. Without `--ask-key` the key is read from `NOVAPOSHTA_API_KEY`.
 
 ## Development
 
@@ -142,6 +161,7 @@ npm run live-check    # runs every tool against the real API (needs the network)
 - `src/methods.ts` is the catalogue of API methods the server may call.
 - `tests/support/contract.ts` lists, per method, the properties the live check sent. Every tool test calls the tool through a real MCP client, and when a test ends each request it recorded goes through `assertMatchesContract`.
 - `scripts/live-check.mjs` is the other half: it starts `dist/index.js` over stdio and calls each tool against `api.novaposhta.ua`. It reads public directories, asks for calculations and tracks one made-up number. Run it after changing what a tool sends, then update the contract.
+- `tests/live-check.test.ts` runs that script against a local stand-in for the API, including the cases in which it has to fail and the ones in which a key, a number or a phone must not reach the output.
 - `tests/e2e.test.ts` starts the built server as a child process over stdio against a local HTTP mock.
 - To poke at the server by hand: `npx @modelcontextprotocol/inspector node dist/index.js`.
 
